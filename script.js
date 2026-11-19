@@ -1,7 +1,5 @@
 
 // 1. THE MENU
-// The menu is written once here and added to every page automatically.
-
 // The outline that "draws" itself around a menu link when you hover over it
 const borderSvg = '<svg class="animated-border-svg" viewBox="0 0 100 40" preserveAspectRatio="none" aria-hidden="true"><rect width="100%" height="100%" rx="8" /></svg>';
 
@@ -85,4 +83,28 @@ window.addEventListener("scroll", () => {
 // When clicked, glide smoothly back to the top
 backToTop.addEventListener("click", () => {
   window.scrollTo({ top: 0, behavior: "smooth" });
+});
+
+
+// 3. KEEP SCROLLING INSIDE THE SCENES
+// Over a BabylonJS scene, the scroll wheel should zoom the camera, not scroll the page.
+// The same goes for Space and the arrow keys once you've clicked into a scene.
+
+// Find every scene canvas on this page (there's one on each element page)
+document.querySelectorAll(".scene-frame canvas").forEach(sceneCanvas => {
+
+  // Mouse wheel over the scene: stop the page scrolling.
+  // Babylon still receives the wheel, so the camera zoom keeps working.
+  // "passive: false" is needed, or the browser won't let us stop the scroll.
+  sceneCanvas.addEventListener("wheel", event => {
+    event.preventDefault();
+  }, { passive: false });
+
+  // Keys pressed while the scene is selected: stop Space and the arrow keys scrolling the page
+  const scrollKeys = ["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"];
+  sceneCanvas.addEventListener("keydown", event => {
+    if (scrollKeys.includes(event.code)) {
+      event.preventDefault();
+    }
+  });
 });

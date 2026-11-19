@@ -420,77 +420,110 @@ const createScene = function () {
     moon.applyDisplacementMap(drawHeightMap(), 0, 2.5);
 
     //This is creating TON 618, the supermassive black hole at the centre of a distant galaxy. It has a glowing disk of gas and dust around it, and a bright ring of light caused by gravitational lensing.
+    // Its look is inspired by Gargantua, the black hole in the film Interstellar.
     const tonSize = 80;
     const tonPosition = new BABYLON.Vector3(0, 0, 400);
+    const horizon = tonSize / 2; // the black hole's edge (its radius)
 
     // An empty, slightly tilted "holder" for everything that orbits TON 618.
     // The disk and the falling matter sit inside it, so they spin flat in their own tilted plane instead of wobbling.
     const tonTilt = new BABYLON.TransformNode("tonTilt", scene);
     tonTilt.position = tonPosition.clone();
-    tonTilt.rotation.x = 0.15; // tipped slightly towards the camera
+    tonTilt.rotation.x = 0.08; // tipped very slightly towards the camera, so we see the disk almost edge-on
 
-    // The black hole: pure black, with no shine
+    // The black hole: almost black, with a faint deep-blue tint, like light bent around from behind it
     const blackHoleMat = new BABYLON.StandardMaterial("blackHoleMat", scene);
     blackHoleMat.diffuseColor = new BABYLON.Color3(0, 0, 0);
     blackHoleMat.specularColor = new BABYLON.Color3(0, 0, 0);
+    blackHoleMat.emissiveColor = new BABYLON.Color3(0.012, 0.018, 0.045);
 
     const blackHole = BABYLON.MeshBuilder.CreateSphere("blackHole", { diameter: tonSize, segments: 48 }, scene);
     blackHole.position = tonPosition.clone();
     blackHole.material = blackHoleMat;
 
-    // Draws streaks of glowing gas using code: lots of thin bright lines on black.
-    // Wrapped around the disk and ring, they make the spinning easy to see.
-    function drawStreaks() {
-        const W = 1024;
-        const H = 128;
-        const streakTexture = new BABYLON.DynamicTexture("streaks", { width: W, height: H }, scene);
-        const paint = streakTexture.getContext();
-
-        // Start with black: black adds no extra glow
-        paint.fillStyle = "#000000";
-        paint.fillRect(0, 0, W, H);
-
-        // Hundreds of thin streaks of different lengths and brightness
-        for (let i = 0; i < 500; i++) {
-            const x = Math.random() * W;
-            const y = Math.random() * H;
-            const length = 40 + Math.random() * 220;
-            const thickness = 1 + Math.random() * 3;
-            const brightness = 0.2 + Math.random() * 0.8;
-            paint.fillStyle = `rgba(255, 255, 255, ${brightness})`;
-
-            // Drawn twice, so streaks running off the right-hand edge carry on from the left, with no visible seam
-            [-W, 0].forEach(offset => paint.fillRect(x + offset, y, length, thickness));
-        }
-
-        // Send the finished drawing to the graphics card
-        streakTexture.update();
-        return streakTexture;
+    // Makes a material that shows a painted, see-through, glowing picture.
+    // The picture is used twice: once for its colour (emissive) and once for how see-through it is (opacity).
+    function glowingMaterial(name, texture) {
+        const material = new BABYLON.StandardMaterial(name, scene);
+        material.diffuseColor = new BABYLON.Color3(0, 0, 0);
+        material.specularColor = new BABYLON.Color3(0, 0, 0);
+        material.emissiveTexture = texture; // the colours glow by themselves
+        material.opacityTexture = texture;  // see-through wherever the picture is see-through
+        material.disableLighting = true;    // lights don't change it
+        material.backFaceCulling = false;   // visible from above and below
+        return material;
     }
 
-    // Glowing blue material for the disk. "Emissive" means it gives off its own light,
-    // so it stays bright whatever the lights around it are doing.
-    // The streaks are added on top of the blue, making brighter bands of gas.
-    const diskMat = new BABYLON.StandardMaterial("diskMat", scene);
-    diskMat.diffuseColor = new BABYLON.Color3(1, 1, 1);
-    diskMat.specularColor = new BABYLON.Color3(1, 1, 1);
-    diskMat.emissiveColor = new BABYLON.Color3(0.19, 0.37, 0.99);
-    diskMat.emissiveTexture = drawStreaks();
-    diskMat.emissiveTexture.level = 0.8; // how strongly the streaks show
+    // Paints the disk using code: white-hot near the black hole, cooling to gold, then orange,
+    // then fading away at the edge. Thin arcs and grain are added so the spin is easy to see.
+    const diskWorldSize = tonSize * 4; // how wide the disk is in the scene
+    function drawDiskTexture() {
+        const S = 1024;          // picture size in pixels
+        const centre = S / 2;
+        const pixelsPerUnit = S / diskWorldSize;
+        const inner = horizon * pixelsPerUnit; // the black hole's edge, in pixels
+        const outer = centre;                  // the edge of the picture
 
-    // The disk starts as a fat ring (a torus), inside the tilted holder. "updatable" means we're allowed to reshape it.
-    const disk = BABYLON.MeshBuilder.CreateTorus("disk", { diameter: tonSize * 1.9, thickness: tonSize * 0.35, tessellation: 96, updatable: true }, scene);
+        const texture = new BABYLON.DynamicTexture("diskTexture", { width: S, height: S }, scene, true);
+        const paint = texture.getContext();
+        paint.clearRect(0, 0, S, S); // start fully see-through
+
+        // The main glow: a circular gradient from the black hole's edge outwards
+        const glow = paint.createRadialGradient(centre, centre, inner, centre, centre, outer);
+        glow.addColorStop(0, "rgba(255, 255, 255, 0)");      // invisible inside the black hole
+        glow.addColorStop(0.02, "rgba(255, 255, 255, 1)");   // white-hot right at the edge
+        glow.addColorStop(0.15, "rgba(255, 246, 225, 1)");   // warm white
+        glow.addColorStop(0.35, "rgba(255, 205, 120, 0.9)"); // gold
+        glow.addColorStop(0.6, "rgba(235, 140, 60, 0.55)");  // orange
+        glow.addColorStop(0.85, "rgba(170, 85, 35, 0.2)");   // dim, cooler orange
+        glow.addColorStop(1, "rgba(0, 0, 0, 0)");            // fades to nothing
+        paint.fillStyle = glow;
+        paint.fillRect(0, 0, S, S);
+
+        // Streaks: short curved arcs around the centre, brighter near the middle
+        for (let i = 0; i < 350; i++) {
+            const radius = inner + 6 + Math.random() * (outer - inner - 20);
+            const start = Math.random() * Math.PI * 2;
+            const fade = 1 - (radius - inner) / (outer - inner);
+            paint.strokeStyle = `rgba(255, 240, 215, ${(0.15 + Math.random() * 0.5) * fade})`;
+            paint.lineWidth = 1 + Math.random() * 2;
+            paint.beginPath();
+            paint.arc(centre, centre, radius, start, start + 0.2 + Math.random() * 0.8);
+            paint.stroke();
+        }
+
+        // Grain: thousands of tiny gold and orange specks, like dust in the disk
+        for (let i = 0; i < 9000; i++) {
+            const radius = inner + Math.random() * (outer - inner);
+            const angle = Math.random() * Math.PI * 2;
+            const fade = 1 - (radius - inner) / (outer - inner);
+            paint.fillStyle = Math.random() < 0.5
+                ? `rgba(255, 230, 180, ${0.6 * fade + 0.1})`
+                : `rgba(255, 170, 90, ${0.5 * fade + 0.1})`;
+            paint.fillRect(centre + Math.cos(angle) * radius, centre + Math.sin(angle) * radius, 1.5, 1.5);
+        }
+
+        texture.hasAlpha = true; // tells Babylon the picture has see-through parts
+        texture.update();
+        return texture;
+    }
+
+    // The disk is a flat, square sheet made of a grid of points. The painted picture
+    // makes it look round. The grid of points is what lets us bend it below.
+    // "updatable" means we're allowed to reshape it.
+    const disk = BABYLON.MeshBuilder.CreateGround("disk", { width: diskWorldSize, height: diskWorldSize, subdivisions: 96, updatable: true }, scene);
     disk.parent = tonTilt;
-    disk.material = diskMat;
+    disk.material = glowingMaterial("diskMat", drawDiskTexture());
+    disk.alphaIndex = 2; // drawn after the ring, so the front of the disk passes in front of it
 
 
 
-    //through mesh manipulation, the disk is warped into a wavy shape, so it looks like a spinning ring of gas and dust around the black hole.
+    //through mesh manipulation, the disk is warped into a gentle wave, as if TON 618's gravity were bending it.
     // Get the position of every corner point as one long list: x, y, z, x, y, z...
     const diskPoints = disk.getVerticesData(BABYLON.VertexBuffer.PositionKind);
 
-    // How high the wave rises and falls
-    const warpHeight = tonSize * 0.08;
+    // How high the wave rises and falls at the very edge
+    const warpHeight = tonSize * 0.06;
 
     // Go through the points three numbers (x, y, z) at a time
     for (let i = 0; i < diskPoints.length; i += 3) {
@@ -500,22 +533,56 @@ const createScene = function () {
         // Which way round the disk this point is, as an angle (like a clock hand)
         const angle = Math.atan2(z, x);
 
-        // Squash the height down to 8% so the ring becomes a flat band,
-        // then lift or lower it depending on its angle: two "hills" and two "valleys" around the disk
-        diskPoints[i + 1] = diskPoints[i + 1] * 0.08 + Math.sin(angle * 2) * warpHeight;
+        // How far out this point is: 0 at the centre, 1 at the edge
+        const distanceOut = Math.sqrt(x * x + z * z) / (diskWorldSize / 2);
+
+        // Lift or lower it depending on its angle (two "hills" and two "valleys" around the disk),
+        // bending more the further out it is, so the middle stays flat
+        diskPoints[i + 1] = Math.sin(angle * 2) * warpHeight * distanceOut;
     }
 
     // Save the new shape back onto the disk
     disk.updateVerticesData(BABYLON.VertexBuffer.PositionKind, diskPoints);
 
 
-    // Bright cyan material for the lensing ring, with its own streaks so its spin shows too
-    const lensingMat = new BABYLON.StandardMaterial("lensingMat", scene);
-    lensingMat.diffuseColor = new BABYLON.Color3(1, 1, 1);
-    lensingMat.specularColor = new BABYLON.Color3(1, 1, 1);
-    lensingMat.emissiveColor = new BABYLON.Color3(0.03, 0.89, 1);
-    lensingMat.emissiveTexture = drawStreaks();
-    lensingMat.emissiveTexture.level = 0.6;
+    // Paints the ring using code: a thick, soft, white-hot band hugging the black hole,
+    // with faint arcs so its spin shows too.
+    const ringWorldSize = tonSize * 1.8; // how wide the ring's picture is in the scene
+    function drawRingTexture() {
+        const S = 1024;
+        const centre = S / 2;
+        const pixelsPerUnit = S / ringWorldSize;
+        const inner = horizon * pixelsPerUnit * 0.97; // just inside the black hole's edge
+        const outer = centre * 0.98;
+
+        const texture = new BABYLON.DynamicTexture("ringTexture", { width: S, height: S }, scene, true);
+        const paint = texture.getContext();
+        paint.clearRect(0, 0, S, S);
+
+        const glow = paint.createRadialGradient(centre, centre, inner, centre, centre, outer);
+        glow.addColorStop(0, "rgba(255, 255, 255, 0)");
+        glow.addColorStop(0.04, "rgba(255, 255, 255, 1)");    // white-hot inner edge
+        glow.addColorStop(0.3, "rgba(255, 250, 240, 0.95)");
+        glow.addColorStop(0.55, "rgba(255, 238, 215, 0.55)");
+        glow.addColorStop(0.8, "rgba(210, 205, 240, 0.15)");  // a faint cool haze at the outside
+        glow.addColorStop(1, "rgba(0, 0, 0, 0)");
+        paint.fillStyle = glow;
+        paint.fillRect(0, 0, S, S);
+
+        for (let i = 0; i < 200; i++) {
+            const radius = inner + 8 + Math.random() * (outer - inner) * 0.5;
+            const start = Math.random() * Math.PI * 2;
+            paint.strokeStyle = `rgba(255, 255, 255, ${0.15 + Math.random() * 0.4})`;
+            paint.lineWidth = 1 + Math.random() * 2.5;
+            paint.beginPath();
+            paint.arc(centre, centre, radius, start, start + 0.3 + Math.random());
+            paint.stroke();
+        }
+
+        texture.hasAlpha = true;
+        texture.update();
+        return texture;
+    }
 
     // The lensing ring: the back of the disk, bent around the black hole. Always faces the camera.
     const lensingHolder = new BABYLON.TransformNode("lensingHolder", scene);
@@ -526,53 +593,15 @@ const createScene = function () {
     const lensingSpinner = new BABYLON.TransformNode("lensingSpinner", scene);
     lensingSpinner.parent = lensingHolder;
 
-    const lensingRing = BABYLON.MeshBuilder.CreateTorus("lensingRing", { diameter: tonSize * 1.2, thickness: tonSize * 0.12, tessellation: 96 }, scene);
-    lensingRing.rotation.x = Math.PI / 2;
+    // The ring is a flat square showing the painted band, facing the camera
+    const lensingRing = BABYLON.MeshBuilder.CreatePlane("lensingRing", { size: ringWorldSize }, scene);
     lensingRing.parent = lensingSpinner;
-    lensingRing.material = lensingMat;
+    lensingRing.material = glowingMaterial("lensingMat", drawRingTexture());
+    lensingRing.alphaIndex = 1;
 
 
     //This creates the gravitational pull: glowing specks of matter orbiting TON 618 and spiralling in.
     // Like real orbits, they speed up the closer they get, then vanish as they cross the event horizon.
-    const dustCount = 900;            // how many specks
-    const horizon = tonSize / 2;      // the black hole's edge (its radius)
-
-    // A glowing blue-white material for the specks
-    const dustMat = new BABYLON.StandardMaterial("dustMat", scene);
-    dustMat.diffuseColor = new BABYLON.Color3(0, 0, 0);
-    dustMat.specularColor = new BABYLON.Color3(0, 0, 0);
-    dustMat.emissiveColor = new BABYLON.Color3(0.7, 0.9, 1);
-    dustMat.disableLighting = true;
-
-    // ONE tiny sphere, drawn 900 times using "thin instances". Much faster than 900 separate spheres.
-    const dust = BABYLON.MeshBuilder.CreateSphere("dust", { diameter: 1.4, segments: 3 }, scene);
-    dust.material = dustMat;
-    dust.parent = tonTilt;                // orbit in the same tilted plane as the disk
-    dust.alwaysSelectAsActiveMesh = true; // always draw it, even though its copies are spread far apart
-
-    // Each speck remembers its distance from the centre, its angle round the disk,
-    // its height above or below the disk, and how long it has existed
-    const dustRadius = [];
-    const dustAngle = [];
-    const dustHeight = [];
-    const dustAge = [];
-
-    // Places a speck. "anywhere" scatters it across the whole disk (used at the start);
-    // otherwise it starts again at the outer edge, as fresh matter falling in.
-    function spawnDust(i, anywhere) {
-        dustRadius[i] = anywhere ? horizon + 2 + Math.random() * 55 : tonSize + Math.random() * 25;
-        dustAngle[i] = Math.random() * Math.PI * 2;
-        dustHeight[i] = (Math.random() - 0.5) * 3;
-        dustAge[i] = anywhere ? 1 : 0;
-    }
-    for (let i = 0; i < dustCount; i++) {
-        spawnDust(i, true);
-    }
-
-    // Each copy needs a "matrix": 16 numbers that hold its position and size.
-    // They all live in one long list, which we refill every frame.
-    const dustMatrices = new Float32Array(dustCount * 16);
-    dust.thinInstanceSetBuffer("matrix", dustMatrices, 16, false);
 
     // Reusable helpers, so we're not creating new objects 60 times a second
     const tempMatrix = new BABYLON.Matrix();
@@ -580,11 +609,112 @@ const createScene = function () {
     const tempPosition = new BABYLON.Vector3();
     const noRotation = BABYLON.Quaternion.Identity();
 
-    // (e) GLOW EFFECT: makes anything "emissive" (the disk, ring, specks and torch lens)
-    const glowLayer = new BABYLON.GlowLayer("glow", scene);
-    glowLayer.intensity = 0.9;
-    glowLayer.addExcludedMesh(skybox); // don't let the sky glow
-    glowLayer.addExcludedMesh(beam);   // the beam is already soft, so no extra glow
+    // Builds one swirl of infalling matter. Written once as a function, then used twice:
+    // for the flat disk, and for the upright event horizon ring.
+    //   name        - a name for it
+    //   parent      - what it's attached to (so it sits in that object's plane)
+    //   count       - how many specks
+    //   outerRadius - how far out the specks start
+    //   upright     - false = lying flat like the disk, true = standing up like the ring
+    //   direction   - which way it swirls: 1 or -1 (chosen to match its ring's spin)
+    //   colour      - the colour the specks glow
+    //   size        - how big each speck is
+    function createInfallingMatter(name, parent, count, outerRadius, upright, direction, colour, size) {
+
+        // A glowing material in this swirl's colour
+        const material = new BABYLON.StandardMaterial(name + "Mat", scene);
+        material.diffuseColor = new BABYLON.Color3(0, 0, 0);
+        material.specularColor = new BABYLON.Color3(0, 0, 0);
+        material.emissiveColor = colour;
+        material.disableLighting = true;
+
+        // ONE tiny sphere, drawn many times using "thin instances". Much faster than lots of separate spheres.
+        const mesh = BABYLON.MeshBuilder.CreateSphere(name, { diameter: size, segments: 3 }, scene);
+        mesh.material = material;
+        mesh.parent = parent;
+        mesh.alwaysSelectAsActiveMesh = true; // always draw it, even though its copies are spread far apart
+
+        // Each speck remembers its distance from the centre, its angle round,
+        // how far it sits off the plane, and how long it has existed
+        const radius = [];
+        const angle = [];
+        const offset = [];
+        const age = [];
+
+        // Places a speck. "anywhere" scatters it across the whole swirl (used at the start);
+        // otherwise it starts again at the outer edge, as fresh matter falling in.
+        function spawn(i, anywhere) {
+            radius[i] = anywhere ? horizon + 2 + Math.random() * (outerRadius - horizon) : outerRadius + Math.random() * 20;
+            angle[i] = Math.random() * Math.PI * 2;
+            offset[i] = (Math.random() - 0.5) * 3;
+            age[i] = anywhere ? 1 : 0;
+        }
+        for (let i = 0; i < count; i++) {
+            spawn(i, true);
+        }
+
+        // Each copy needs a "matrix": 16 numbers that hold its position and size.
+        // They all live in one long list, which we refill every frame.
+        const matrices = new Float32Array(count * 16);
+        mesh.thinInstanceSetBuffer("matrix", matrices, 16, false);
+
+        // Hand back an "update" function, which the motion section calls every frame
+        return {
+            update(delta) {
+                for (let i = 0; i < count; i++) {
+                    const r = radius[i];
+
+                    // Orbit: the closer to the centre, the faster it goes round
+                    angle[i] += direction * (180 / Math.pow(r, 1.5)) * delta;
+
+                    // Fall: drift inwards, a little faster the closer it gets
+                    radius[i] -= (0.6 + 30 / r) * delta;
+                    age[i] += delta;
+
+                    // Crossed the event horizon? It's gone. Start a new speck at the outer edge.
+                    if (radius[i] < horizon + 0.5) {
+                        spawn(i, false);
+                    }
+
+                    // Size: grows in over its first second, and shrinks away just before the horizon
+                    const fadeIn = Math.min(1, age[i]);
+                    const fadeOut = Math.min(1, Math.max(0, (radius[i] - horizon) / 8));
+                    const scale = fadeIn * fadeOut;
+                    tempScale.set(scale, scale, scale);
+
+                    // Work out where the speck is: flat (like the disk) or upright (like the ring)
+                    const across = Math.cos(angle[i]) * radius[i];
+                    const round = Math.sin(angle[i]) * radius[i];
+                    if (upright) {
+                        tempPosition.set(across, round, offset[i]);
+                    } else {
+                        tempPosition.set(across, offset[i], round);
+                    }
+
+                    // Save its position and size into the list
+                    BABYLON.Matrix.ComposeToRef(tempScale, noRotation, tempPosition, tempMatrix);
+                    tempMatrix.copyToArray(matrices, i * 16);
+                }
+
+                // Tell Babylon the list has changed, so it redraws the specks in their new places
+                mesh.thinInstanceBufferUpdated("matrix");
+            }
+        };
+    }
+
+    // Warm gold matter spiralling in across the wide, flat disk...
+    const diskMatter = createInfallingMatter("diskMatter", tonTilt, 1500, tonSize * 2, false, -1, new BABYLON.Color3(1, 0.82, 0.55), 0.9);
+
+    // ...and white-hot matter around the upright ring, always facing the camera like the ring itself
+    const ringMatter = createInfallingMatter("ringMatter", lensingHolder, 400, tonSize * 0.75, true, 1, new BABYLON.Color3(1, 0.97, 0.9), 0.9);
+
+    // (e) GLOW EFFECT: makes anything that glows by itself (the disk, ring, specks and torch lens)
+    // bleed soft light around its edges. A bigger "blur" spreads the glow into a wide, soft halo.
+    const glowLayer = new BABYLON.GlowLayer("glow", scene, { blurKernelSize: 64 });
+    glowLayer.intensity = 1.0;
+    glowLayer.addExcludedMesh(skybox);    // don't let the sky glow
+    glowLayer.addExcludedMesh(beam);      // the beam is already soft, so no extra glow
+    glowLayer.addExcludedMesh(blackHole); // keep the black hole's edge crisp
 
 
 
@@ -607,40 +737,13 @@ const createScene = function () {
         // The moon turns very slowly
         moon.rotation.y += 0.01 * delta;
 
-        // TON 618's disk and event horizon ring spin, in the same direction
-        disk.rotation.y += 0.12 * delta;
-        lensingSpinner.rotation.z += 0.12 * delta;
+        // TON 618's disk and ring turn slowly and majestically
+        disk.rotation.y += 0.05 * delta;
+        lensingSpinner.rotation.z += 0.05 * delta;
 
-        // The gravitational pull: move every speck
-        for (let i = 0; i < dustCount; i++) {
-            const r = dustRadius[i];
-
-            // Orbit: the closer to the centre, the faster it goes round (same direction as the disk)
-            dustAngle[i] -= (180 / Math.pow(r, 1.5)) * delta;
-
-            // Fall: drift inwards, a little faster the closer it gets
-            dustRadius[i] -= (0.6 + 30 / r) * delta;
-            dustAge[i] += delta;
-
-            // Crossed the event horizon? It's gone. Start a new speck at the outer edge.
-            if (dustRadius[i] < horizon + 0.5) {
-                spawnDust(i, false);
-            }
-
-            // Size: grows in over its first second, and shrinks away just before the horizon
-            const fadeIn = Math.min(1, dustAge[i]);
-            const fadeOut = Math.min(1, Math.max(0, (dustRadius[i] - horizon) / 8));
-            const size = fadeIn * fadeOut;
-
-            // Work out where the speck is, and save its position and size into the list
-            tempScale.set(size, size, size);
-            tempPosition.set(Math.cos(dustAngle[i]) * dustRadius[i], dustHeight[i], Math.sin(dustAngle[i]) * dustRadius[i]);
-            BABYLON.Matrix.ComposeToRef(tempScale, noRotation, tempPosition, tempMatrix);
-            tempMatrix.copyToArray(dustMatrices, i * 16);
-        }
-
-        // Tell Babylon the list has changed, so it redraws the specks in their new places
-        dust.thinInstanceBufferUpdated("matrix");
+        // The gravitational pull: matter spirals in across the disk and around the ring
+        diskMatter.update(delta);
+        ringMatter.update(delta);
     });
 
 
