@@ -1,0 +1,50 @@
+git attributes file
+* text=auto eol=lf
+
+# ----- WEBSITE CODE (text) -----
+*.html  text diff=html
+*.css   text diff=css
+*.js    text
+*.json  text
+*.md    text
+*.txt   text
+*.svg   text
+
+# ----- 3D SCENE FILES -----
+# .gltf and .babylon files are text (written in JSON)
+*.gltf     text
+*.babylon  text
+# .glb files are binary (packed 3D models)
+*.glb      binary
+
+# ----- IMAGES (binary) -----
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.ico   binary
+
+# Babylon environment and HDR sky textures
+*.env   binary
+*.hdr   binary
+*.dds   binary
+
+
+# ----- AUDIO (binary) -----
+*.mp3   binary
+*.wav   binary
+*.ogg   binary
+
+# ----- VIDEO (binary) -----
+*.mp4   binary
+*.webm  binary
+
+# ----- FONTS (binary) -----
+*.woff   binary
+*.woff2  binary
+*.ttf    binary
+*.otf    binary
+
+# ----- DOCUMENTS (binary) -----
+*.pdf   binary
