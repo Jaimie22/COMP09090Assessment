@@ -1,5 +1,20 @@
 
+// Setting up: find the canvas (the drawing area) on the web page
+const canvas = document.getElementById("renderCanvas");
+
+// Create the Babylon engine. It draws our scene onto the canvas.
+// "true" turns on antialiasing, which smooths jagged edges.
+const engine = new BABYLON.Engine(canvas, true);
+
+
 // Creating  scene 3
+// Controls (all relative to the screen):
+//   W / S = thrust up / down
+//   A / D = thrust left / right
+//   Space / Shift = thrust forwards / backwards
+//   E = grab or let go (debris, or the shuttle)
+//   F = throw the debris you're holding (and get pushed the other way!)
+//   Drag = look around, Scroll = zoom
 const createScene = async function () {
 
     // The scene is the "world" that holds everything we create.
@@ -21,6 +36,8 @@ const createScene = async function () {
     const pullConstant = 48000;   // how strong TON 618's gravity is
     const maxPull = 20;           // the strongest the pull can ever get
     const throwStrength = 8;      // how hard debris is thrown (and how hard you're pushed back)
+    const cameraLag = 0.1;        // how slowly the camera catches up (closer to 0 = snappier, closer to 1 = lazier)
+    const shuttleMass = 40;       // how heavy the shuttle is, compared with the astronaut (who weighs 1)
 
     const tonSize = 80;
     const tonPosition = new BABYLON.Vector3(0, 0, 400);
@@ -184,16 +201,51 @@ const createScene = async function () {
     const leftArm = arms[0];
     const rightArm = arms[1];
 
-    // Jetpack flames: two glowing cones pointing down out of the bottom of the backpack.
-    // They're hidden until the jetpack fires.
-    const flames = [-1, 1].map(side => {
-        const flame = BABYLON.MeshBuilder.CreateCylinder("flame" + side, { height: 0.8, diameterTop: 0.25, diameterBottom: 0 }, scene);
-        flame.position = new BABYLON.Vector3(0.22 * side, -0.7, 0.5);
+    // Thrusters all around the jetpack, like the manoeuvring jets on a real spacecraft.
+    // Each one points one way and pushes the astronaut the OPPOSITE way when it fires.
+    const thrusters = [];
+
+    //   name              - a name for it
+    //   position          - where it sits on the astronaut
+    //   exhaustDirection  - which way its flame shoots out
+    function addThruster(name, position, exhaustDirection) {
+        // A holder, turned so that its "down" points along the exhaust direction
+        const mount = new BABYLON.TransformNode(name, scene);
+        mount.parent = astronaut;
+        mount.position = position;
+        mount.rotationQuaternion = new BABYLON.Quaternion();
+        BABYLON.Quaternion.FromUnitVectorsToRef(BABYLON.Vector3.Down(), exhaustDirection, mount.rotationQuaternion);
+
+        // The nozzle: a short metal cone
+        const nozzle = BABYLON.MeshBuilder.CreateCylinder(name + "Nozzle", { height: 0.12, diameterTop: 0.08, diameterBottom: 0.14 }, scene);
+        nozzle.position.y = -0.06;
+        nozzle.material = metalMat;
+        nozzle.parent = mount;
+
+        // The flame grows out of the nozzle's tip. It sits on a "pivot" at the tip,
+        // so when we stretch the pivot, the flame grows outwards from the nozzle.
+        const flamePivot = new BABYLON.TransformNode(name + "FlamePivot", scene);
+        flamePivot.position.y = -0.12;
+        flamePivot.parent = mount;
+
+        const flame = BABYLON.MeshBuilder.CreateCylinder(name + "Flame", { height: 0.5, diameterTop: 0.12, diameterBottom: 0 }, scene);
+        flame.position.y = -0.25; // hangs down from the pivot
         flame.material = flameMat;
-        flame.parent = astronaut;
+        flame.parent = flamePivot;
         flame.isVisible = false;
-        return flame;
-    });
+
+        thrusters.push({ flame, flamePivot, exhaust: exhaustDirection, size: 0 });
+    }
+
+    // The backpack's centre is at (0, 0.2, 0.45). The thrusters sit on its faces:
+    addThruster("thrusterBottomLeft", new BABYLON.Vector3(-0.25, -0.3, 0.45), new BABYLON.Vector3(0, -1, 0));  // fire down to push UP
+    addThruster("thrusterBottomRight", new BABYLON.Vector3(0.25, -0.3, 0.45), new BABYLON.Vector3(0, -1, 0));
+    addThruster("thrusterTop", new BABYLON.Vector3(0, 0.7, 0.45), new BABYLON.Vector3(0, 1, 0));               // fire up to push DOWN
+    addThruster("thrusterLeft", new BABYLON.Vector3(-0.4, 0.2, 0.45), new BABYLON.Vector3(-1, 0, 0));          // fire left to push RIGHT
+    addThruster("thrusterRight", new BABYLON.Vector3(0.4, 0.2, 0.45), new BABYLON.Vector3(1, 0, 0));           // fire right to push LEFT
+    addThruster("thrusterRear", new BABYLON.Vector3(0, 0.2, 0.65), new BABYLON.Vector3(0, 0, 1));              // fire backwards to push FORWARDS
+    addThruster("thrusterFrontLeft", new BABYLON.Vector3(-0.4, 0.6, 0.25), new BABYLON.Vector3(0, 0, -1));     // fire forwards (over the shoulders) to push BACKWARDS
+    addThruster("thrusterFrontRight", new BABYLON.Vector3(0.4, 0.6, 0.25), new BABYLON.Vector3(0, 0, -1));
 
     // An invisible "reach" bubble in front of the astronaut.
     // Anything it touches is close enough to grab.
@@ -206,16 +258,19 @@ const createScene = async function () {
     // Give the capsule a physical body: a mass of 1, and a little bounce.
     const playerPhysics = new BABYLON.PhysicsAggregate(player, BABYLON.PhysicsShapeType.CAPSULE, { mass: 1, restitution: 0.3 }, scene);
 
-    // Stop the capsule spinning when it bumps into things (we turn the astronaut ourselves)
-    playerPhysics.body.setMassProperties({ inertia: new BABYLON.Vector3(0, 0, 0) });
+    // Stop the capsule spinning when it bumps into things (we turn the astronaut ourselves).
+    // Setting mass properties REPLACES all of them, so the mass of 1 must be stated again here.
+    // Without it, Havok works out a new mass from the capsule's size, and the astronaut becomes far too heavy to move.
+    playerPhysics.body.setMassProperties({ mass: 1, inertia: new BABYLON.Vector3(0, 0, 0) });
 
     // A tiny bit of drag, so the controls stay manageable
     playerPhysics.body.setLinearDamping(0.05);
 
 
-    // Creating the same ArcRotateCamera as Scene 2, but with a wider view so you can see more of TON 618 and the shuttle.
+    // Creating the same ArcRotateCamera as Scene 2. It isn't locked onto the astronaut:
+    // instead it smoothly catches up with them every frame (see the frame-by-frame section),
+    // so you can actually see the astronaut move across the screen before the camera follows.
     const camera = new BABYLON.ArcRotateCamera("camera", -Math.PI / 2, 1.3, 16, startPosition.clone(), scene);
-    camera.lockedTarget = player; // always look at the astronaut
     camera.attachControl(canvas, true);
     camera.lowerRadiusLimit = 6;
     camera.upperRadiusLimit = 30;
@@ -226,8 +281,19 @@ const createScene = async function () {
 
 
     // The shuttle: a simple model with a fuselage, nose, wings, tail fin and cargo bay.
-    // The shuttle is a TransformNode, which is a container for the parts. This makes it easy to move and rotate the whole shuttle.
+    // It's built in two layers:
+    //   shuttleRoot  - the part the physics engine moves (it can't be scaled, as physics doesn't like scaling)
+    //   shuttleModel - the visible model inside it, scaled up 1.6 times
+    const shuttleStartPosition = new BABYLON.Vector3(0, -1, 14);
+    const shuttleStartRotation = BABYLON.Quaternion.FromEulerAngles(0, 0.2, 0.15);
+
+    const shuttleRoot = new BABYLON.TransformNode("shuttleRoot", scene);
+    shuttleRoot.position = shuttleStartPosition.clone();
+    shuttleRoot.rotationQuaternion = shuttleStartRotation.clone(); // physics uses this kind of rotation
+
     const shuttle = new BABYLON.TransformNode("shuttle", scene);
+    shuttle.parent = shuttleRoot;
+    shuttle.scaling = new BABYLON.Vector3(1.6, 1.6, 1.6); // a bit bigger, so the astronaut looks small next to it
 
     const fuselage = BABYLON.MeshBuilder.CreateCylinder("fuselage", { height: 10, diameter: 2 }, scene);
     fuselage.rotation.z = Math.PI / 2;
@@ -261,28 +327,41 @@ const createScene = async function () {
         engineNozzle.parent = shuttle;
     });
 
-    shuttle.position = new BABYLON.Vector3(0, -1, 14);
-    shuttle.rotation = new BABYLON.Vector3(0, 0.2, 0.15);
-    shuttle.scaling = new BABYLON.Vector3(1.6, 1.6, 1.6);
-
-    // Work out the shuttle's final position and size, so we can line up its colliders
-    shuttle.computeWorldMatrix(true);
-
-    // Invisible boxes that give the shuttle a physical shape (one for the body, one for the wings).
+    // The shuttle's physical shape: two simple boxes (the body and the wings) joined together in a "container".
     // Physics shapes are kept simple on purpose: boxes are much faster to calculate than the real model.
+    // Their sizes are the model's sizes multiplied by 1.6, to match its scaling.
+    const shuttleShape = new BABYLON.PhysicsShapeContainer(scene);
+    shuttleShape.addChild(new BABYLON.PhysicsShapeBox(
+        new BABYLON.Vector3(1 * 1.6, 0, 0),              // centre of the body box
+        BABYLON.Quaternion.Identity(),                    // not turned
+        new BABYLON.Vector3(12 * 1.6, 2 * 1.6, 2 * 1.6),  // its size
+        scene));
+    shuttleShape.addChild(new BABYLON.PhysicsShapeBox(
+        new BABYLON.Vector3(-1.5 * 1.6, -0.6 * 1.6, 0),   // centre of the wings box
+        BABYLON.Quaternion.Identity(),
+        new BABYLON.Vector3(4 * 1.6, 0.5, 9 * 1.6),
+        scene));
+
+    // A "dynamic" body: it moves, gets pulled by TON 618, and can be bumped into
+    const shuttleBody = new BABYLON.PhysicsBody(shuttleRoot, BABYLON.PhysicsMotionType.DYNAMIC, false, scene);
+    shuttleBody.shape = shuttleShape;
+    shuttleBody.setMassProperties({ mass: shuttleMass });
+    shuttleBody.setLinearDamping(0.05);
+    shuttleBody.setAngularDamping(0.5); // stops it spinning forever if bumped
+
+    // Invisible "hitboxes" matching the physical shape, so the reach bubble can tell when the shuttle is in reach.
+    // They ride along inside shuttleRoot, so they move with the shuttle.
     const grabbables = []; // everything that can be grabbed with E
 
-    function addShuttleCollider(name, size, localPosition) {
-        const collider = BABYLON.MeshBuilder.CreateBox(name, size, scene);
-        // Place it where that part of the shuttle really is, turned the same way
-        collider.position = BABYLON.Vector3.TransformCoordinates(localPosition, shuttle.getWorldMatrix());
-        collider.rotation = shuttle.rotation.clone();
-        collider.isVisible = false;
-        const physics = new BABYLON.PhysicsAggregate(collider, BABYLON.PhysicsShapeType.BOX, { mass: 0 }, scene);
-        grabbables.push({ mesh: collider, body: physics.body, isDebris: false });
+    function addShuttleHitbox(name, size, centre) {
+        const hitbox = BABYLON.MeshBuilder.CreateBox(name, size, scene);
+        hitbox.position = centre;
+        hitbox.parent = shuttleRoot;
+        hitbox.isVisible = false;
+        grabbables.push({ mesh: hitbox, body: shuttleBody, isDebris: false });
     }
-    addShuttleCollider("shuttleBodyCollider", { width: 12 * 1.6, height: 2 * 1.6, depth: 2 * 1.6 }, new BABYLON.Vector3(1, 0, 0));
-    addShuttleCollider("shuttleWingCollider", { width: 4 * 1.6, height: 0.5, depth: 9 * 1.6 }, new BABYLON.Vector3(-1.5, -0.6, 0));
+    addShuttleHitbox("shuttleBodyHitbox", { width: 12 * 1.6, height: 2 * 1.6, depth: 2 * 1.6 }, new BABYLON.Vector3(1 * 1.6, 0, 0));
+    addShuttleHitbox("shuttleWingHitbox", { width: 4 * 1.6, height: 0.5, depth: 9 * 1.6 }, new BABYLON.Vector3(-1.5 * 1.6, -0.6 * 1.6, 0));
 
 
     // Picks a random spot near the start, for placing (and replacing) debris
@@ -303,6 +382,37 @@ const createScene = async function () {
 
         grabbables.push({ mesh: piece, body: physics.body, isDebris: true });
     }
+
+
+    // Space dust: hundreds of faint specks that stay STILL in space.
+    // Because they don't move, you see them stream past whenever you move, which shows your speed and direction.
+    // They live in an invisible box around the astronaut. When a speck falls out of one side of the box,
+    // it reappears on the other side, so there's always dust around you wherever you fly.
+    const dustCount = 500;
+    const dustBoxSize = 60; // how big the box of dust around the astronaut is
+
+    const dustMat = new BABYLON.StandardMaterial("spaceDustMat", scene);
+    dustMat.diffuseColor = new BABYLON.Color3(0, 0, 0);
+    dustMat.specularColor = new BABYLON.Color3(0, 0, 0);
+    dustMat.emissiveColor = new BABYLON.Color3(0.45, 0.5, 0.6); // faint grey-blue
+    dustMat.disableLighting = true;
+
+    // ONE tiny speck, drawn 500 times with "thin instances"
+    const spaceDust = BABYLON.MeshBuilder.CreateSphere("spaceDust", { diameter: 0.08, segments: 2 }, scene);
+    spaceDust.material = dustMat;
+    spaceDust.alwaysSelectAsActiveMesh = true;
+
+    // Scatter the specks at fixed spots in space, around the start
+    const dustSpots = [];
+    for (let i = 0; i < dustCount; i++) {
+        dustSpots.push(new BABYLON.Vector3(
+            startPosition.x + (Math.random() - 0.5) * dustBoxSize,
+            startPosition.y + (Math.random() - 0.5) * dustBoxSize,
+            startPosition.z + (Math.random() - 0.5) * dustBoxSize
+        ));
+    }
+    const dustMatrices = new Float32Array(dustCount * 16);
+    spaceDust.thinInstanceSetBuffer("matrix", dustMatrices, 16, false);
 
 
     // A tilted holder for everything that orbits TON 618
@@ -506,12 +616,13 @@ const createScene = async function () {
     glowLayer.intensity = 1.0;
     glowLayer.addExcludedMesh(skybox);
     glowLayer.addExcludedMesh(blackHole);
+    glowLayer.addExcludedMesh(spaceDust); // keep the dust faint and subtle
 
 
     // The fun bit! Some applied physics: TON 618's gravity pulls everything towards it, and the astronaut can thrust with the jetpack.
     // The pull is stronger the closer you are, and weaker the further away you are. This is a simplified version of real gravity, which is proportional to 1 / (distance squared).
-    function pullTowardsTON(mesh, body, mass) {
-        const position = mesh.getAbsolutePosition();
+    function pullTowardsTON(node, body, mass) {
+        const position = node.getAbsolutePosition();
 
         // The direction and distance from this object to TON 618
         const towardsTON = tonPosition.subtract(position);
@@ -520,15 +631,19 @@ const createScene = async function () {
         // How strong the pull is at this distance (never more than maxPull)
         const pull = Math.min(maxPull, pullConstant / (distance * distance));
 
-        // Push the object towards TON 618. Heavier objects need more force to move the same amount.
+        // Push the object towards TON 618. Heavier objects need more force to move the same amount,
+        // so multiplying by the mass means everything falls at the same rate, just like real gravity.
         body.applyForce(towardsTON.normalize().scale(pull * mass), position);
     }
 
-    // Moves a physics object straight to a new spot, and stops it dead.
+    // Moves a physics object straight to a new spot (and, if given, a new rotation), and stops it dead.
     // (Physics objects normally ignore being moved by hand, so we briefly let the move through.)
-    function teleport(mesh, body, newPosition) {
+    function teleport(node, body, newPosition, newRotation) {
         body.disablePreStep = false;
-        mesh.position.copyFrom(newPosition);
+        node.position.copyFrom(newPosition);
+        if (newRotation) {
+            node.rotationQuaternion.copyFrom(newRotation);
+        }
         body.setLinearVelocity(BABYLON.Vector3.Zero());
         body.setAngularVelocity(BABYLON.Vector3.Zero());
         scene.onAfterPhysicsObservable.addOnce(() => {
@@ -582,9 +697,11 @@ const createScene = async function () {
 
         // Join the hand to the object at the spot where they meet.
         // A "ball and socket" joint holds them together but lets them swivel, like a shoulder.
+        // (For the shuttle, the joint attaches to the shuttle's physics root, which is what the body belongs to.)
+        const targetNode = target.isDebris ? target.mesh : shuttleRoot;
         const handPosition = reach.getAbsolutePosition();
         const pivotOnPlayer = BABYLON.Vector3.TransformCoordinates(handPosition, BABYLON.Matrix.Invert(player.getWorldMatrix()));
-        const pivotOnTarget = BABYLON.Vector3.TransformCoordinates(handPosition, BABYLON.Matrix.Invert(target.mesh.getWorldMatrix()));
+        const pivotOnTarget = BABYLON.Vector3.TransformCoordinates(handPosition, BABYLON.Matrix.Invert(targetNode.getWorldMatrix()));
 
         grabJoint = new BABYLON.BallAndSocketConstraint(pivotOnPlayer, pivotOnTarget, new BABYLON.Vector3(0, 1, 0), new BABYLON.Vector3(0, 1, 0), scene);
         playerPhysics.body.addConstraint(target.body, grabJoint);
@@ -615,41 +732,102 @@ const createScene = async function () {
     }
 
 
-    // Thrusting: the jetpack fires in the direction the camera is looking, and TON 618's gravity pulls everything in.
+    // Thrusting: the jetpack pushes the astronaut in the direction of the keys, relative to the screen,
+    // and TON 618's gravity pulls everything in.
     let isThrusting = false;
+    const thrustDirection = new BABYLON.Vector3(0, 1, 0); // which way we're thrusting (used to choose which thrusters fire)
 
     scene.onBeforePhysicsObservable.add(() => {
 
         // --- The jetpack ---
-        // Directions relative to where the camera is looking
-        const forward = camera.getDirection(BABYLON.Axis.Z);
+        // Directions relative to the camera, so "up" is always up on the screen
+        const up = camera.getDirection(BABYLON.Axis.Y);
         const right = camera.getDirection(BABYLON.Axis.X);
+        const forward = camera.getDirection(BABYLON.Axis.Z);
         const thrust = BABYLON.Vector3.Zero();
 
-        if (keysDown["KeyW"]) thrust.addInPlace(forward);
-        if (keysDown["KeyS"]) thrust.subtractInPlace(forward);
-        if (keysDown["KeyD"]) thrust.addInPlace(right);
-        if (keysDown["KeyA"]) thrust.subtractInPlace(right);
-        if (keysDown["Space"]) thrust.y += 1;
-        if (keysDown["ShiftLeft"] || keysDown["ShiftRight"]) thrust.y -= 1;
+        if (keysDown["KeyW"]) thrust.addInPlace(up);            // W = up
+        if (keysDown["KeyS"]) thrust.subtractInPlace(up);       // S = down
+        if (keysDown["KeyD"]) thrust.addInPlace(right);         // D = right
+        if (keysDown["KeyA"]) thrust.subtractInPlace(right);    // A = left
+        if (keysDown["Space"]) thrust.addInPlace(forward);      // Space = forwards
+        if (keysDown["ShiftLeft"] || keysDown["ShiftRight"]) thrust.subtractInPlace(forward); // Shift = backwards
 
         isThrusting = thrust.lengthSquared() > 0;
         if (isThrusting) {
-            playerPhysics.body.applyForce(thrust.normalize().scale(thrustPower), player.getAbsolutePosition());
+            thrust.normalize();
+            thrustDirection.copyFrom(thrust); // remember it, so the right thrusters can fire
+            playerPhysics.body.applyForce(thrust.scale(thrustPower), player.getAbsolutePosition());
         }
 
-        // TON 618's gravity, on the astronaut and every piece of debris
+        // TON 618's gravity pulls on EVERYTHING: the astronaut, the shuttle, and every piece of debris
         pullTowardsTON(player, playerPhysics.body, 1);
+        pullTowardsTON(shuttleRoot, shuttleBody, shuttleMass);
         grabbables.filter(item => item.isDebris).forEach(item => pullTowardsTON(item.mesh, item.body, 2));
     });
 
-    // Frame-by-frame updates: animations, and resetting the astronaut and debris if they get too close to TON 618.
+
+    // Body physics: "springs" that make the astronaut's body react to how they're moving.
+    // A spring pulls a value towards a target, but overshoots a little and wobbles before settling,
+    // just like a real body that's been pushed.
+    //   stiffness - how strongly it pulls towards the target (higher = snappier)
+    //   damping   - how quickly the wobble dies away (higher = less wobble)
+    function createSpring(stiffness, damping) {
+        return {
+            value: 0,
+            speed: 0,
+            update(target, delta) {
+                const force = (target - this.value) * stiffness - this.speed * damping;
+                this.speed += force * delta;
+                this.value += this.speed * delta;
+                return this.value;
+            }
+        };
+    }
+
+    const bodyPitch = createSpring(25, 5); // leaning forwards and backwards
+    const bodyRoll = createSpring(25, 5);  // leaning left and right
+    const armSwing = createSpring(20, 4);  // arms pushed down or lifted up
+    const legSwing = createSpring(20, 4);  // legs trailing behind or swinging ahead
+
+    // We measure the astronaut's acceleration (how quickly their speed is changing) from the physics engine.
+    // That way the body reacts to EVERYTHING: the jetpack, TON 618's pull, and bumping into things.
+    const previousVelocity = new BABYLON.Vector3();
+    const acceleration = new BABYLON.Vector3();
+    const cameraTarget = startPosition.clone(); // the point the camera is gliding towards
+
+
+    // Frame-by-frame updates: animations, and resetting things that get too close to TON 618.
     let time = 0;
-    let flameSize = 0;
 
     scene.onBeforeRenderObservable.add(() => {
-        const delta = engine.getDeltaTime() / 1000;
+        // Seconds since the last frame (capped, so a slow frame can't make the springs go wild)
+        const delta = Math.min(engine.getDeltaTime() / 1000, 0.05);
         time += delta;
+
+        // --- The camera smoothly catches up with the astronaut ---
+        // Each frame it closes part of the gap. "cameraLag" sets how lazy it is, and the maths keeps
+        // the speed the same on fast and slow computers.
+        const catchUp = 1 - Math.pow(cameraLag, delta);
+        BABYLON.Vector3.LerpToRef(cameraTarget, player.getAbsolutePosition(), catchUp, cameraTarget);
+        // Move the camera's focus point, keeping its angle and distance the same
+        camera.setTarget(cameraTarget, false, false, true);
+
+        // --- Space dust: keep the specks in a box around the astronaut ---
+        const playerPosition = player.getAbsolutePosition();
+        const halfBox = dustBoxSize / 2;
+        for (let i = 0; i < dustCount; i++) {
+            const spot = dustSpots[i];
+            // If a speck has fallen too far behind on any side, move it to the far side of the box.
+            // It stays perfectly still otherwise, which is what makes movement visible.
+            ["x", "y", "z"].forEach(axis => {
+                if (spot[axis] - playerPosition[axis] > halfBox) spot[axis] -= dustBoxSize;
+                if (spot[axis] - playerPosition[axis] < -halfBox) spot[axis] += dustBoxSize;
+            });
+            BABYLON.Matrix.TranslationToRef(spot.x, spot.y, spot.z, tempMatrix);
+            tempMatrix.copyToArray(dustMatrices, i * 16);
+        }
+        spaceDust.thinInstanceBufferUpdated("matrix");
 
         // TON 618 turns, and matter spirals in
         disk.rotation.y += 0.05 * delta;
@@ -657,11 +835,19 @@ const createScene = async function () {
         diskMatter.update(delta);
         ringMatter.update(delta);
 
-        // The jetpack flames. They grow and shrink smoothly, and flicker randomly
-        flameSize = BABYLON.Scalar.Lerp(flameSize, isThrusting ? 1 : 0, 0.2);
-        flames.forEach(flame => {
-            flame.isVisible = flameSize > 0.05;
-            flame.scaling.y = flameSize * (0.8 + Math.random() * 0.4);
+        // --- The thrusters ---
+        // Turn the thrust direction into the astronaut's own point of view (so we know which side of the jetpack to fire)
+        const localThrust = BABYLON.Vector3.TransformNormal(thrustDirection, BABYLON.Matrix.Invert(astronaut.getWorldMatrix())).normalize();
+
+        thrusters.forEach(thruster => {
+            // A thruster fires when its flame points AGAINST the direction we want to go.
+            // "Dot" measures how closely two directions line up: 1 = exactly opposite (after the minus), 0 = sideways.
+            const strength = isThrusting ? Math.max(0, -BABYLON.Vector3.Dot(localThrust, thruster.exhaust)) : 0;
+
+            // Grow and shrink the flame smoothly, with a random flicker like real exhaust
+            thruster.size = BABYLON.Scalar.Lerp(thruster.size, strength, 0.2);
+            thruster.flame.isVisible = thruster.size > 0.05;
+            thruster.flamePivot.scaling.y = thruster.size * (0.8 + Math.random() * 0.4);
         });
 
         // Animation: turn to face the direction we're drifting
@@ -672,18 +858,54 @@ const createScene = async function () {
             astronaut.rotation.y = BABYLON.Scalar.LerpAngle(astronaut.rotation.y, targetAngle, 0.05);
         }
 
-        // Animation: lean forward slightly while the jetpack fires
-        astronaut.rotation.x = BABYLON.Scalar.Lerp(astronaut.rotation.x, isThrusting ? 0.25 : 0, 0.05);
+        // --- Body physics ---
+        // Measure the acceleration: the change in speed since last frame, smoothed out so it isn't jittery
+        if (delta > 0) {
+            const rawAcceleration = velocity.subtract(previousVelocity).scale(1 / delta);
+            BABYLON.Vector3.LerpToRef(acceleration, rawAcceleration, 0.15, acceleration);
+        }
+        previousVelocity.copyFrom(velocity);
 
-        // Animation: arms and legs. Attempting to move makes the arms swing, and the legs kick a little.
+        // Turn the acceleration into the astronaut's own point of view (forwards, right, up),
+        // by undoing the way they're facing
+        const local = BABYLON.Vector3.TransformNormal(acceleration, BABYLON.Matrix.RotationY(-astronaut.rotation.y));
+        const forwardAcceleration = -local.z; // the astronaut faces -z, so forwards is negative z
+        const rightAcceleration = local.x;
+        const upAcceleration = local.y;
+
+        // Work out how the body should react (each kept within sensible limits)
+        const pitchTarget = BABYLON.Scalar.Clamp(-forwardAcceleration * 0.08, -0.5, 0.5); // lean into forwards/backwards thrust
+        const rollTarget = BABYLON.Scalar.Clamp(-rightAcceleration * 0.08, -0.5, 0.5);    // lean into left/right thrust
+        const armTarget = BABYLON.Scalar.Clamp(upAcceleration * 0.06, -0.4, 0.4);          // going up pushes arms down, going down lifts them
+        const legTarget = BABYLON.Scalar.Clamp(-forwardAcceleration * 0.1, -0.6, 0.6);     // legs trail behind when speeding up
+
+        // Feed the targets into the springs, which move there with a natural overshoot and wobble
+        astronaut.rotation.x = bodyPitch.update(pitchTarget, delta);
+        astronaut.rotation.z = bodyRoll.update(rollTarget, delta);
+        const armAmount = armSwing.update(armTarget, delta);
+        const legAmount = legSwing.update(legTarget, delta);
+
+        // Arms: their outward angle, minus the spring's push (left side = -1, right side = 1)
+        leftArm.rotation.z = -(0.35 - armAmount);
+        rightArm.rotation.z = 0.35 - armAmount;
+
+        // The left arm also floats loosely (the right arm's forwards swing is used for grabbing)
         leftArm.rotation.x = Math.sin(time * 0.8) * 0.2;
-        legs[0].rotation.x = Math.sin(time * 0.6) * 0.15;
-        legs[1].rotation.x = Math.sin(time * 0.6 + 1.5) * 0.15;
 
-        // Reset the astronaut and debris if they get too close to TON 618
+        // Legs: a gentle float, plus the spring's trailing swing
+        legs[0].rotation.x = Math.sin(time * 0.6) * 0.15 + legAmount;
+        legs[1].rotation.x = Math.sin(time * 0.6 + 1.5) * 0.15 + legAmount;
+
+        // Reset the astronaut if they get too close to TON 618
         if (BABYLON.Vector3.Distance(player.getAbsolutePosition(), tonPosition) < resetDistance) {
             releaseGrab();
             teleport(player, playerPhysics.body, startPosition);
+        }
+
+        // The shuttle falls in too: it reappears where it started
+        if (BABYLON.Vector3.Distance(shuttleRoot.getAbsolutePosition(), tonPosition) < resetDistance) {
+            if (held && !held.isDebris) releaseGrab();
+            teleport(shuttleRoot, shuttleBody, shuttleStartPosition, shuttleStartRotation);
         }
 
         // Debris that falls in reappears near the start
@@ -700,5 +922,18 @@ const createScene = async function () {
     return scene;
 };
 
-// Tell the Playground which function builds the scene
-export default createScene;
+
+// Starting the scene. Because createScene has to wait for the physics engine to load,
+// it hands back a "promise": a note saying "the scene will be ready soon". ".then" runs once it actually is ready.
+createScene().then(scene => {
+
+    // Draw the scene over and over, around 60 times a second, so it moves
+    engine.runRenderLoop(() => {
+        scene.render();
+    });
+});
+
+// If the browser window changes size, resize the scene to fit
+window.addEventListener("resize", () => {
+    engine.resize();
+});
